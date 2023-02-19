@@ -18,7 +18,7 @@ class Importer(guidelinereader.Importer, investments.Importer):
         self.date_format = '%m/%d/%Y'
         self.funds_db_txt = 'funds_by_ticker'
         self.skip_head_rows = 1
-        self.skip_tail_rows = 1
+        self.skip_tail_rows = 0
         self.get_payee = lambda ot: ot.type
         self.header_map = {
             "Action":      'type',
@@ -44,7 +44,7 @@ class Importer(guidelinereader.Importer, investments.Importer):
             'MoneyLink Deposit':            'transfer',
             'MoneyLink Transfer':           'transfer',
             'Pr Yr Div Reinvest':           'dividends',
-            'Reinvest Dividend':            'dividends',
+            'Reinvest Dividend':            'reinvest',
             'Reinvest Shares':              'buystock',
             'Sell':                         'sellstock',
             'Short Term Cap Gain Reinvest': 'capgainsd_st',

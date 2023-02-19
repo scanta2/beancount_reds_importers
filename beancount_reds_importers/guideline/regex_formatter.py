@@ -105,7 +105,6 @@ fee_transaction_regex =  (
 exchange_transaction_regex =  (
     r'^(?P<date>\d\d\/\d\d) Exchange Rebalance'
     r'(?:.*?)'
-    r'\$(?P<amount>[\d.,]+)$'
 )
 buy_transaction_regex = (
     r'^Buy '
