@@ -1,18 +1,71 @@
 """Generic investment importer module for beancount. Needs a reader module (eg: ofx, csv, etc.) from
 beancount_reads_importers to work."""
 
-import datetime
 import itertools
 import sys
 from beancount.core import data
 from beancount.core import amount
 from beancount.ingest import importer
 from beancount.core.position import CostSpec
-from beancount_reds_importers.libtransactionbuilder import common
+from beancount_reds_importers.libtransactionbuilder import common, transactionbuilder
 
 
-class Importer(importer.ImporterProtocol):
+class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder):
     def __init__(self, config):
+        """Initializes the importer.
+
+        REQUIRED_CONFIG = {
+            'account_number': 'account number',
+            'main_account'  : 'Destination account of import',
+            'cash_account'  : 'Cash account (usually same as the main account + a :{currency} appended)',
+            'transfer'      : 'Account to which contributions and outgoing is transferred',
+                               # transfer account is optional. If left off no target posting will be created.
+                               # This allows for additional tools to handle this like smart importer.
+            'dividends'     : 'Account to book dividends',
+            'cg'            : 'Account to book capital gains/losses',
+            'capgainsd_lt'  : 'Account to book long term capital gains distributions to'
+            'capgainsd_st'  : 'Account to book short term capital gains distributions to'
+            'fees'          : 'Account to book fees to',
+            'invexpense'    : 'Account to book expenses (like foreign taxes) to',
+            'rounding_error': 'Account to book rounding errors to',
+            'fund_info '    : 'dictionary of fund info (by_id, money_market)',
+        }
+
+        Certian variables in the config are resolved by this transaction builder.
+        Those variables are:
+
+          {ticker}: replaced with the ticker symbol. Use this to obtain account
+            names that end with the commodity (commodity leaf accounts).
+
+          {currency}: replaced with the operating currency of the account in
+            question (which is in turn obtained from the ofx or csv)
+
+          {source401k}: replaced with the source of the 401(k) funding, like
+            'Pretax' or 'Match' (for employer matching). Used only in 401(k)
+            accounts. Practically needed only in 'main_account'.
+
+        Example:
+        {
+            'account_number' : '1234567',
+            'main_account'   : 'Assets:Investments:XTrade:{ticker}',
+            'cash_account'   : 'Assets:Investments:XTrade:{currency}',
+            'transfer'       : 'Assets:Zero-Sum-Accounts:Transfers:Bank-Account',
+            'dividends'      : 'Income:Dividends:XTrade:{ticker}',
+            'interest'       : 'Income:Interest:XTrade:{ticker}',
+            'cg'             : 'Income:Capital-Gains:XTrade:{ticker}',
+            'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:XTrade:{ticker}',
+            'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:XTrade:{ticker}',
+            'fees'           : 'Expenses:Brokerage-Fees:XTrade',
+            'invexpense'     : 'Expenses:Investment-Expenses:XTrade',
+            'rounding_error' : 'Equity:Rounding-Errors:Imports',
+            'fund_info'      : fund_info,
+        }
+
+        For a 401(k) account you could set:
+
+            'main_account'   : 'Assets:Vanguard:401k:{source401k}:{ticker}',
+        """
+
         self.config = config
         self.initialized = False
         self.reader_ready = False
@@ -22,58 +75,30 @@ class Importer(importer.ImporterProtocol):
         # For overriding in custom_init()
         self.get_payee = lambda ot: ot.memo
 
-        # REQUIRED_CONFIG = {
-        #     #                  : # The string "{ticker}" will be replaced with the ticker symbol. Use this
-        #                            to obtain account names that end with the commodity (commodity leaf
-        #                            accounts). The string "{currency}" will be replaced with the operating
-        #                            currency of the account in question (which is in turn obtained from the
-        #                            ofx or csv)
-        #     'account_number'   : 'account number',
-        #     'main_account'     : 'Destination account of import',
-        #     'cash_account'     : 'Cash account (usually same as the main account + a :{currency} appended)',
-        #     'transfer'         : 'Account to which contributions and outgoing is transferred',
-        #     #                     transfer account is optional. If left off no target posting will be created.
-        #     #                     This allows for additional tools to handle this like smart importer.
-        #     'dividends'        : 'Account to book dividends',
-        #     'cg'               : 'Account to book capital gains/losses',
-        #     'capgainsd_lt'     : 'Account to book long term capital gains distributions to'
-        #     'capgainsd_st'     : 'Account to book short term capital gains distributions to'
-        #     'fees'             : 'Account to book fees to',
-        #     'rounding_error'   : 'Account to book rounding errors to',
-        #     'fund_info '       : 'dictionary of fund info (by_id, money_market)',
-        # }
-        #
-        # Example:
-        # { 'account_number' : '1234567',
-        #     'main_account'   : 'Assets:Investments:XTrade:{ticker}',
-        #     'cash_account'   : 'Assets:Investments:XTrade:{currency}',
-        #     'transfer'       : 'Assets:Zero-Sum-Accounts:Transfers:Bank-Account',
-        #     'dividends'      : 'Income:Dividends:XTrade:{ticker}',
-        #     'interest'       : 'Income:Interest:XTrade:{ticker}',
-        #     'cg'             : 'Income:Capital-Gains:XTrade:{ticker}',
-        #     'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:XTrade:{ticker}',
-        #     'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:XTrade:{ticker}',
-        #     'fees'           : 'Expenses:Brokerage-Fees:XTrade',
-        #     'rounding_error' : 'Equity:Rounding-Errors:Imports',
-        #     'fund_info'       : fund_info, }
-
     def initialize(self, file):
-        if not self.initialized:
-            self.custom_init()
-            self.initialize_reader(file)
-            if self.reader_ready:
-                # self.currency is defined by the reader (ofx, csv, etc.)
-                d = {'currency': self.currency, 'ticker': '{ticker}'}
-                self.config = {k: v.format(**d) if isinstance(v, str) else v for k, v in self.config.items()}
-                self.money_market_funds = self.config['fund_info']['money_market']
-                self.fund_data = self.config['fund_info']['fund_data']  # [(ticker, id, long_name), ...]
-                self.funds_by_id = {i: (ticker, desc) for ticker, i, desc in self.fund_data}
-                self.funds_by_ticker = {ticker: (ticker, desc) for ticker, _, desc in self.fund_data}
+        if self.initialized:
+            return
 
-                # Most ofx/csv files refer to funds by id (cusip/isin etc.) Some use tickers instead
-                self.funds_db = getattr(self, getattr(self, 'funds_db_txt', 'funds_by_id'))
-                self.build_account_map()  # TODO: avoid for identify()
-            self.initialized = True
+        self.custom_init()
+        self.initialize_reader(file)
+
+        if self.reader_ready:
+            config_subst_vars = {'currency': self.currency,
+                                 # Leave the other values as is
+                                 'ticker': '{ticker}',
+                                 'source401k': '{source401k}',
+                                 }
+            self.set_config_variables(config_subst_vars)
+            self.money_market_funds = self.config['fund_info']['money_market']
+            self.fund_data = self.config['fund_info']['fund_data']  # [(ticker, id, long_name), ...]
+            self.funds_by_id = {i: (ticker, desc) for ticker, i, desc in self.fund_data}
+            self.funds_by_ticker = {ticker: (ticker, desc) for ticker, _, desc in self.fund_data}
+
+            # Most ofx/csv files refer to funds by id (cusip/isin etc.) Some use tickers instead
+            self.funds_db = getattr(self, getattr(self, 'funds_db_txt', 'funds_by_id'))
+            self.build_account_map()
+
+        self.initialized = True
 
     def build_account_map(self):
         # map transaction types to target posting accounts
@@ -84,11 +109,14 @@ class Importer(importer.ImporterProtocol):
             "sellstock":    self.config['cash_account'],
             "buyother":     self.config['cash_account'],
             "sellother":    self.config['cash_account'],
+            "buydebt":      self.config['cash_account'],
             "reinvest":     self.config['dividends'],
             "dividends":    self.config['dividends'],
             "capgainsd_lt": self.config['capgainsd_lt'],
             "capgainsd_st": self.config['capgainsd_st'],
             "income":       self.config['interest'],
+            "fee":          self.config['fees'],
+            "invexpense":   self.config.get('invexpense', "ACCOUNT_NOT_CONFIGURED:INVEXPENSE"),
         }
 
         if 'transfer' in self.config:
@@ -119,7 +147,11 @@ class Importer(importer.ImporterProtocol):
     def get_ticker_info_from_id(self, security_id):
         try:
             # isin might look like "US293409829" while the ofx use only a substring like "29340982"
-            ticker, ticker_long_name = [v for k, v in self.funds_db.items() if security_id in k][0]
+            ticker = None
+            try:  # first try a full match, fall back to substring
+                ticker, ticker_long_name = [v for k, v in self.funds_db.items() if security_id == k][0]
+            except IndexError:
+                ticker, ticker_long_name = [v for k, v in self.funds_db.items() if security_id in k][0]
         except IndexError:
             print(f"Error: fund info not found for {security_id}", file=sys.stderr)
             securities = self.get_security_list()
@@ -128,8 +160,22 @@ class Importer(importer.ImporterProtocol):
                 for k in self.funds_db:
                     if s in k:
                         securities_missing.remove(s)
-            # securities_missing = [s for s in securities if s not in self.funds_db]
-            print(f"List of securities without fund info: {securities_missing}", file=sys.stderr)
+
+            # try to extract security info from ofx
+            ofx_securities = {}
+            try:
+                for o in self.ofx.security_list:
+                    # Not all institutions provide securities info, nor is the format standardized.
+                    # We do this on a best effort basis and guess the format based on Fidelity's,
+                    # where self.get_security_list() returns cusips via uniqueid
+                    ofx_securities[o.uniqueid] = (o.ticker, o.uniqueid, o.name)
+            except AttributeError:  # ofx doesn't have a security list
+                pass
+
+            print("List of securities without fund info:", file=sys.stderr)
+            for m in securities_missing:
+                print("%s: %s" % (m, ofx_securities.get(m, "Unknown")), file=sys.stderr)
+            # print(f"List of securities without fund info: {securities_missing}", file=sys.stderr)
             # import pdb; pdb.set_trace()
             sys.exit(1)
         return ticker, ticker_long_name
@@ -158,12 +204,22 @@ class Importer(importer.ImporterProtocol):
                 tickers.add(ot.security)
         return tickers
 
-    def main_acct(self, ticker):
-        return self.config['main_account'].format(ticker=ticker)
+    def subst_acct_vars(self, raw_acct, ot, ticker):
+        """Resolve variables within an account like {ticker}.
+        """
+        ot = ot if ot else {}
+        # inv401ksource is an ofx field that is 'PRETAX', 'AFTERTAX', etc.
+        kwargs = {'ticker': ticker, 'source401k': getattr(ot, 'inv401ksource', '').title()}
+        acct = raw_acct.format(**kwargs)
+        return self.remove_empty_subaccounts(acct)  # if 'inv401ksource' was unavailable
 
-    # for custom importers to override
-    def skip_transaction(self, ot):
-        return False
+    def get_acct(self, acct, ot, ticker):
+        """Get an account from self.config, resolve variables, and return
+        """
+        template = self.config.get(acct)
+        if not template:
+            raise KeyError(f'{acct} not set in importer configuration. Config: {self.config}')
+        return self.subst_acct_vars(template, ot, ticker)
 
     # extract() and supporting methods
     # --------------------------------------------------------------------------------
@@ -183,7 +239,7 @@ class Importer(importer.ImporterProtocol):
             metadata['settlement_date'] = str(ot.settleDate.date())
 
         narration = self.security_narration(ot)
-        target_acct = self.get_target_acct(ot, ticker)
+        raw_target_acct = self.get_target_acct(ot, ticker)
         units = ot.units
         total = ot.total
 
@@ -193,17 +249,18 @@ class Importer(importer.ImporterProtocol):
             if not is_money_market:
                 metadata['todo'] = 'TODO: this entry is incomplete until lots are selected (bean-doctor context <filename> <lineno>)'  # noqa: E501
         if ot.type in ['reinvest']:  # dividends are booked to commodity_leaf. Eg: Income:Dividends:HOOLI
-            target_acct = target_acct.format(ticker=ticker)
+            ticker_val = ticker
         else:
-            target_acct = target_acct.format(ticker=self.currency)
+            ticker_val = self.currency
+        target_acct = self.subst_acct_vars(raw_target_acct, ot, ticker_val)
 
         # Build transaction entry
         entry = data.Transaction(metadata, ot.tradeDate.date(), self.FLAG,
                                  self.get_payee(ot), narration,
-                                 data.EMPTY_SET, data.EMPTY_SET, [])
+                                 self.get_tags(ot), data.EMPTY_SET, [])
 
         # Main posting(s):
-        main_acct = self.main_acct(ticker)
+        main_acct = self.get_acct('main_account', ot, ticker)
 
         if is_money_market:  # Use price conversions instead of holding these at cost
             common.create_simple_posting_with_price(entry, main_acct,
@@ -213,12 +270,14 @@ class Importer(importer.ImporterProtocol):
                                                             units, ticker, price_number=ot.unit_price,
                                                             price_currency=self.currency,
                                                             costspec=CostSpec(None, None, None, None, None, None))
-            data.create_simple_posting(entry, self.config['cg'].format(ticker=ticker), None, None)
+            cg_acct = self.get_acct('cg', ot, ticker)
+            data.create_simple_posting(entry, cg_acct, None, None)
         else:  # buy stock/fund
-            # annoyingly, vanguard reinvests have unit_price set to zero. so manually compute it
+            unit_price = getattr(ot, 'unit_price', 0)
+            # annoyingly, vanguard reinvests have ot.unit_price set to zero. so manually compute it
             if (hasattr(ot, 'security') and ot.security) and ot.units and not ot.unit_price:
-                ot.unit_price = round(abs(ot.total) / ot.units, 4)
-            common.create_simple_posting_with_cost(entry, main_acct, units, ticker, ot.unit_price,
+                unit_price = round(abs(ot.total) / ot.units, 4)
+            common.create_simple_posting_with_cost(entry, main_acct, units, ticker, unit_price,
                                                    self.currency, self.price_cost_both_zero_handler)
 
         # "Other" account posting
@@ -231,7 +290,7 @@ class Importer(importer.ImporterProtocol):
         rounding_error = (reverser * total) + (ot.unit_price * units)
         if 0.0005 <= abs(rounding_error) <= self.max_rounding_error:
             data.create_simple_posting(
-                entry, config['rounding_error'], -1 * rounding_error, 'USD')
+                entry, config['rounding_error'], -1 * rounding_error, self.currency)
         # if abs(rounding_error) > self.max_rounding_error:
         #     print("Transactions legs do not sum up! Difference: {}. Entry: {}, ot: {}".format(
         #         rounding_error, entry, ot))
@@ -253,7 +312,7 @@ class Importer(importer.ImporterProtocol):
         try:
             if ot.type in ['transfer']:
                 units = ot.units
-            elif ot.type in ['other', 'credit', 'debit', 'dep', 'cash', 'payment', 'check']:
+            elif ot.type in ['other', 'credit', 'debit', 'dep', 'cash', 'payment', 'check', 'xfer']:
                 units = ot.amount
             else:
                 units = ot.total
@@ -266,7 +325,7 @@ class Importer(importer.ImporterProtocol):
                        'capgainsd_st', 'transfer'] and (hasattr(ot, 'security') and ot.security):
             ticker, ticker_long_name = self.get_ticker_info(ot.security)
             narration = self.security_narration(ot)
-            main_acct = self.main_acct(ticker)
+            main_acct = self.get_acct('main_account', ot, ticker)
         else:  # cash transaction
             narration = ot.type
             ticker = self.currency
@@ -275,15 +334,16 @@ class Importer(importer.ImporterProtocol):
         # Build transaction entry
         entry = data.Transaction(metadata, date, self.FLAG,
                                  self.get_payee(ot), narration,
-                                 data.EMPTY_SET, data.EMPTY_SET, [])
+                                 self.get_tags(ot), data.EMPTY_SET, [])
         target_acct = self.get_target_acct(ot, ticker)
         if target_acct:
-            target_acct = target_acct.format(ticker=ticker)
+            target_acct = self.subst_acct_vars(target_acct, ot, ticker)
 
         # Build postings
-        if ot.type in ['income', 'dividends', 'capgainsd_st', 'capgainsd_lt']:  # cash
-            data.create_simple_posting(entry, config['cash_account'], ot.total, self.currency)
-            data.create_simple_posting(entry, target_acct, -1 * ot.total, self.currency)
+        if ot.type in ['income', 'dividends', 'capgainsd_st', 'capgainsd_lt', 'fee']:  # cash
+            amount = ot.total if hasattr(ot, 'total') else ot.amount
+            data.create_simple_posting(entry, config['cash_account'], amount, self.currency)
+            data.create_simple_posting(entry, target_acct, -1 * amount, self.currency)
         else:
             data.create_simple_posting(entry, main_acct, units, ticker)
             if target_acct:
@@ -311,10 +371,10 @@ class Importer(importer.ImporterProtocol):
         for ot in self.get_transactions():
             if self.skip_transaction(ot):
                 continue
-            if ot.type in ['buymf', 'sellmf', 'buystock', 'sellstock', 'buyother', 'sellother', 'reinvest']:
+            if ot.type in ['buymf', 'sellmf', 'buystock', 'buydebt', 'sellstock', 'buyother', 'sellother', 'reinvest']:
                 entry = self.generate_trade_entry(ot, file, counter)
-            elif ot.type in ['other', 'credit', 'debit', 'transfer', 'dep', 'income',
-                             'dividends', 'capgainsd_st', 'capgainsd_lt', 'cash', 'payment', 'check']:
+            elif ot.type in ['other', 'credit', 'debit', 'transfer', 'xfer', 'dep', 'income', 'fee',
+                             'dividends', 'capgainsd_st', 'capgainsd_lt', 'cash', 'payment', 'check', 'invexpense']:
                 entry = self.generate_transfer_entry(ot, file, counter)
             else:
                 print("ERROR: unknown entry type:", ot.type)
@@ -325,12 +385,7 @@ class Importer(importer.ImporterProtocol):
 
     def extract_balances_and_prices(self, file, counter):
         new_entries = []
-        date = self.get_max_transaction_date()
-        if date:
-            # balance assertions are evaluated at the beginning of the date, so move it to the following day
-            date += datetime.timedelta(days=1)
-        else:
-            print("Warning: no transactions, using statement date for balance assertions.")
+        date = self.get_balance_assertion_date()
 
         settlement_fund_balance = 0
         for pos in self.get_balance_positions():
@@ -341,7 +396,8 @@ class Importer(importer.ImporterProtocol):
             # if there are no transactions, use the date in the source file for the balance. This gives us the
             # bonus of an updated, recent balance assertion
             bal_date = date if date else pos.date.date()
-            balance_entry = data.Balance(metadata, bal_date, self.main_acct(ticker),
+            main_acct = self.get_acct('main_account', None, ticker)
+            balance_entry = data.Balance(metadata, bal_date, main_acct,
                                          amount.Amount(pos.units, ticker),
                                          None, None)
             new_entries.append(balance_entry)
@@ -357,15 +413,14 @@ class Importer(importer.ImporterProtocol):
                 new_entries.append(price_entry)
 
         # ----------------- available cash
-        available_cash = self.get_available_cash()
+        available_cash = self.get_available_cash(settlement_fund_balance)
         if available_cash is not None:
-            balance = available_cash - settlement_fund_balance
             metadata = data.new_metadata(file.name, next(counter))
             metadata.update(self.build_metadata(file, metatype='balance_cash'))
             try:
                 bal_date = date if date else self.file_date(file).date()  # unavailable file_date raises AttributeError
                 balance_entry = data.Balance(metadata, bal_date, self.config['cash_account'],
-                                             amount.Amount(balance, self.currency),
+                                             amount.Amount(available_cash, self.currency),
                                              None, None)
                 new_entries.append(balance_entry)
             except AttributeError:

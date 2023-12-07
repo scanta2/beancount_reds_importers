@@ -6,8 +6,8 @@ from os import path
 
 sys.path.insert(0, path.join(path.dirname(__file__)))
 
-from beancount_reds_importers import vanguard
-from beancount_reds_importers import schwab_csv
+from beancount_reds_importers.importers import vanguard
+from beancount_reds_importers.importers.schwab import schwab_csv_brokerage
 from fund_info import *
 # For a better solution for fund_info, see: https://reds-rants.netlify.app/personal-finance/tickers-and-identifiers/
 
@@ -28,8 +28,9 @@ CONFIG = [
         'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:TradIRA:{ticker}',
         'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:TradIRA:{ticker}',
         'fees'           : 'Expenses:Brokerage-Fees:TradIRA',
+        'invexpense'     : 'Expenses:Brokerage-Expenses:TradIRA',
         'rounding_error' : 'Equity:Rounding-Errors:Imports',
-        'fund_info'       : fund_info,
+        'fund_info'      : fund_info,
 
         # Not necessary as this is the default, but here for demo/documentation. 'filename_pattern'
         # is useful when your downloads have custom filenames to differentiate amongst accounts and
@@ -48,11 +49,12 @@ CONFIG = [
         'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:RothIRA:{ticker}',
         'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:RothIRA:{ticker}',
         'fees'           : 'Expenses:Brokerage-Fees:RothIRA',
+        'invexpense'     : 'Expenses:Brokerage-Expenses:TradIRA',
         'rounding_error' : 'Equity:Rounding-Errors:Imports',
         'fund_info'       : fund_info,
     }),
 
-    schwab_csv.Importer({
+    schwab_csv_brokerage.Importer({
         'main_account'   : 'Assets:Investments:Schwab:{ticker}',
         'main_account'   : 'Assets:Investments:Schwab:{currency}',
         'account_number' : '18181',
@@ -63,6 +65,7 @@ CONFIG = [
         'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:Schwab:{ticker}',
         'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:Schwab:{ticker}',
         'fees'           : 'Expenses:Brokerage-Fees:Schwab',
+        'invexpense'     : 'Expenses:Brokerage-Expenses:TradIRA',
         'rounding_error' : 'Equity:Rounding-Errors:Imports',
         'fund_info'       : fund_info,
     }),

@@ -1,7 +1,6 @@
 """csv importer module for beancount to be used along with investment/banking/other importer modules in
 beancount_reds_importers."""
 
-import petl as etl
 from beancount_reds_importers.libreader import csvreader
 
 # This is a reader that converts:
@@ -32,10 +31,6 @@ from beancount_reds_importers.libreader import csvreader
 # The xlsx_multitable reader is built on top of this reader
 
 
-class NotImplementedError(Exception):
-    pass
-
-
 class Importer(csvreader.Importer):
     def initialize_reader(self, file):
         csvreader.Importer.initialize_reader(self, file)
@@ -48,9 +43,6 @@ class Importer(csvreader.Importer):
 
     def convert_columns(self, rdr):
         pass
-
-    def read_raw(self, file):
-        return etl.fromcsv(file.name)
 
     def is_section_title(self, row):
         # Match against rows that contain section titles. Eg: 'section1', 'section2', ...
@@ -102,5 +94,5 @@ class Importer(csvreader.Importer):
         # TODO
         raise "Not supported"
 
-    def get_available_cash(self):
+    def get_available_cash(self, settlement_fund_balance=0):
         return None
