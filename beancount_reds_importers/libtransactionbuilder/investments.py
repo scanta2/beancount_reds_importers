@@ -1,7 +1,6 @@
 """Generic investment importer module for beancount. Needs a reader module (eg: ofx, csv, etc.) from
 beancount_reads_importers to work."""
 
-import datetime
 import itertools
 import sys
 from beancount.core import data
@@ -27,6 +26,7 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
             'capgainsd_lt'  : 'Account to book long term capital gains distributions to'
             'capgainsd_st'  : 'Account to book short term capital gains distributions to'
             'fees'          : 'Account to book fees to',
+            'invexpense'    : 'Account to book expenses (like foreign taxes) to',
             'rounding_error': 'Account to book rounding errors to',
             'fund_info '    : 'dictionary of fund info (by_id, money_market)',
         }
@@ -56,6 +56,7 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
             'capgainsd_lt'   : 'Income:Capital-Gains-Distributions:Long:XTrade:{ticker}',
             'capgainsd_st'   : 'Income:Capital-Gains-Distributions:Short:XTrade:{ticker}',
             'fees'           : 'Expenses:Brokerage-Fees:XTrade',
+            'invexpense'     : 'Expenses:Investment-Expenses:XTrade',
             'rounding_error' : 'Equity:Rounding-Errors:Imports',
             'fund_info'      : fund_info,
         }
@@ -108,11 +109,14 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
             "sellstock":    self.config['cash_account'],
             "buyother":     self.config['cash_account'],
             "sellother":    self.config['cash_account'],
+            "buydebt":      self.config['cash_account'],
             "reinvest":     self.config['dividends'],
             "dividends":    self.config['dividends'],
             "capgainsd_lt": self.config['capgainsd_lt'],
             "capgainsd_st": self.config['capgainsd_st'],
             "income":       self.config['interest'],
+            "fee":          self.config['fees'],
+            "invexpense":   self.config.get('invexpense', "ACCOUNT_NOT_CONFIGURED:INVEXPENSE"),
         }
 
         if 'transfer' in self.config:
@@ -308,7 +312,7 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
         try:
             if ot.type in ['transfer']:
                 units = ot.units
-            elif ot.type in ['other', 'credit', 'debit', 'dep', 'cash', 'payment', 'check']:
+            elif ot.type in ['other', 'credit', 'debit', 'dep', 'cash', 'payment', 'check', 'xfer']:
                 units = ot.amount
             else:
                 units = ot.total
@@ -336,9 +340,10 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
             target_acct = self.subst_acct_vars(target_acct, ot, ticker)
 
         # Build postings
-        if ot.type in ['income', 'dividends', 'capgainsd_st', 'capgainsd_lt']:  # cash
-            data.create_simple_posting(entry, config['cash_account'], ot.total, self.currency)
-            data.create_simple_posting(entry, target_acct, -1 * ot.total, self.currency)
+        if ot.type in ['income', 'dividends', 'capgainsd_st', 'capgainsd_lt', 'fee']:  # cash
+            amount = ot.total if hasattr(ot, 'total') else ot.amount
+            data.create_simple_posting(entry, config['cash_account'], amount, self.currency)
+            data.create_simple_posting(entry, target_acct, -1 * amount, self.currency)
         else:
             data.create_simple_posting(entry, main_acct, units, ticker)
             if target_acct:
@@ -366,10 +371,10 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
         for ot in self.get_transactions():
             if self.skip_transaction(ot):
                 continue
-            if ot.type in ['buymf', 'sellmf', 'buystock', 'sellstock', 'buyother', 'sellother', 'reinvest']:
+            if ot.type in ['buymf', 'sellmf', 'buystock', 'buydebt', 'sellstock', 'buyother', 'sellother', 'reinvest']:
                 entry = self.generate_trade_entry(ot, file, counter)
-            elif ot.type in ['other', 'credit', 'debit', 'transfer', 'dep', 'income',
-                             'dividends', 'capgainsd_st', 'capgainsd_lt', 'cash', 'payment', 'check']:
+            elif ot.type in ['other', 'credit', 'debit', 'transfer', 'xfer', 'dep', 'income', 'fee',
+                             'dividends', 'capgainsd_st', 'capgainsd_lt', 'cash', 'payment', 'check', 'invexpense']:
                 entry = self.generate_transfer_entry(ot, file, counter)
             else:
                 print("ERROR: unknown entry type:", ot.type)
@@ -380,12 +385,7 @@ class Importer(importer.ImporterProtocol, transactionbuilder.TransactionBuilder)
 
     def extract_balances_and_prices(self, file, counter):
         new_entries = []
-        date = self.get_max_transaction_date()
-        if date:
-            # balance assertions are evaluated at the beginning of the date, so move it to the following day
-            date += datetime.timedelta(days=1)
-        else:
-            print("Warning: no transactions, using statement date for balance assertions.")
+        date = self.get_balance_assertion_date()
 
         settlement_fund_balance = 0
         for pos in self.get_balance_positions():

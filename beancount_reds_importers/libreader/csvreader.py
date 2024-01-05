@@ -107,7 +107,7 @@ class Importer(reader.Reader, importer.ImporterProtocol):
 
         # fixup currencies
         def remove_non_numeric(x):
-            return re.sub("[^0-9\.-]", "", str(x).strip())  # noqa: W605
+            return re.sub(r'[^0-9\.-]', "", str(x).strip())  # noqa: W605
         currencies = getattr(self, 'currency_fields', []) + ['unit_price', 'fees', 'total', 'amount', 'balance']
         for i in currencies:
             if i in rdr.header():
@@ -207,6 +207,13 @@ class Importer(reader.Reader, importer.ImporterProtocol):
     def skip_transaction(self, row):
         return getattr(row, 'type', 'NO_TYPE') in self.skip_transaction_types
 
+    def get_balance_assertion_date(self):
+        """
+        We add an additional day to get_max_transaction_date(), since Beancount balance
+        assertions are defined to occur on the beginning of the assertion date.
+        """
+        return self.get_max_transaction_date() + datetime.timedelta(days=1)
+
     def get_max_transaction_date(self):
         try:
             # date = self.ofx_account.statement.end_date.date() # this is the date of ofx download
@@ -222,7 +229,7 @@ class Importer(reader.Reader, importer.ImporterProtocol):
         except Exception as err:
             print("ERROR: no end_date. SKIPPING input.")
             traceback.print_tb(err.__traceback__)
-            return False
+            return None
 
         return date
 

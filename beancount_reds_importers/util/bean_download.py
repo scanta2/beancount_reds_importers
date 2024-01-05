@@ -9,6 +9,7 @@ import configparser
 import os
 import tabulate
 import tqdm
+import beancount_reds_importers.util.needs_update as needs_update
 
 
 @click.group(cls=ClickAliasedGroup)
@@ -16,6 +17,9 @@ def cli():
     """Download account statements automatically when possible, or display a reminder of how to download them.
     Multi-threaded."""
     pass
+
+
+cli.add_command(needs_update.accounts_needing_updates)
 
 
 def readConfigFile(configfile):
